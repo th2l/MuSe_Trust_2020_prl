@@ -13,6 +13,7 @@ from pathlib import Path
 from configs.configuration import *
 from common import *
 import copy
+import tabulate
 
 def set_gpu_growth_or_cpu(use_cpu=False):
 
@@ -191,6 +192,54 @@ class ConcordanceLoss(tf.keras.losses.Loss):
     def get_config(self):
         return {'name': self.name, 'reduction': self.reduction}
 
+def ConcordanceLossFunc(y_true, y_pred):
+    batch_count = tf.cast(tf.size(y_true), dtype=tf.float32)
+    y_true = tf.reshape(y_true, (batch_count, -1))
+    y_pred = tf.reshape(y_pred, (batch_count, -1))
+
+    cov_ = tfp.stats.covariance(y_true, y_pred)
+    var_pred = tfp.stats.variance(y_pred)
+    var_true = tfp.stats.variance(y_true)
+    mean_pred = tf.reduce_mean(y_pred)
+    mean_true = tf.reduce_mean(y_true)
+
+    ccc_score = tf.truediv(2 * cov_, var_pred + var_true + tf.square(mean_pred - mean_true))
+    ccc_score = tf.where(tf.math.is_nan(ccc_score), -1.0, ccc_score)  # In range [-1, 1]
+    current_loss = 1 - ccc_score  # In range [0, 2]
+
+    return tf.reshape(current_loss, [])
+
+class MultiTaskLoss(tf.keras.layers.Layer):
+    """https://github.com/yaringal/multi-task-learning-example"""
+    def __init__(self, num_outputs=3, loss_func=ConcordanceLossFunc, trainable=True, **kwargs):
+        self.num_outputs = num_outputs
+        self.loss_func = loss_func
+        self.trainable = trainable
+        super(MultiTaskLoss, self).__init__(**kwargs)
+
+    def build(self, input_shape=None):
+        self.log_vars = []
+        for idx in range(self.num_outputs):
+            self.log_vars +=  [self.add_weight(name='log_var_{}'.format(idx), shape=(1, ), initializer=tf.keras.initializers.Constant(0.), trainable=self.trainable)]
+
+        super(MultiTaskLoss, self).build(input_shape)
+
+    def multi_loss(self, ys_true, ys_pred):
+        assert len(ys_true) == self.num_outputs and len(ys_pred) == self.num_outputs
+        loss = 0
+        for y_true, y_pred, log_var in zip(ys_true, ys_pred, self.log_vars):
+            prec = tf.exp(-log_var[0])
+            loss = loss + prec * self.loss_func(y_true, y_pred)
+        return loss
+
+    def call(self, inputs, **kwargs):
+        ys_true = inputs[: self.num_outputs]
+        ys_pred = inputs[self.num_outputs: ]
+        loss = self.multi_loss(ys_true, ys_pred)
+        self.add_loss(loss, inputs=inputs)
+
+        return ys_pred # tf.keras.backend.concatenate(inputs, -1)
+
 def get_labels_list(task, multitask=False):
     if task == 1:
         # Regression
@@ -221,11 +270,11 @@ parse_dict = {'file_id': str_features, 'chunk_id': str_features,
               'gocar': str_features, 'landmarks_2d': str_features,
               'landmarks_3d': str_features, 'openpose': str_features, 'pdm': str_features,
               'pose': str_features, 'vggface': str_features,
-              'xception': str_features, 'topic': str_features, 'trustworthiness': str_features,
+              'xception': str_features, 'raw_audio': str_features, 'topic': str_features, 'trustworthiness': str_features,
               'valence': str_features, 'arousal': str_features}
 
 
-def filter_features(x, task, use_feat=None, return_infos=False, targets=()):
+def filter_features(x, task, use_feat=None, return_infos=False, targets=(), use_multitask_loss=False):
     """
 
     :param x:
@@ -256,11 +305,16 @@ def filter_features(x, task, use_feat=None, return_infos=False, targets=()):
                 # ret_values[feat_key] = tf.cast(tf.io.parse_tensor(x[feat_key], tf.int64), tf.int32)
                 cur_features = tf.cast(tf.io.parse_tensor(x[feat_key], tf.int64), tf.int32)
             ret_labels[feat_key] = cur_features
+            if use_multitask_loss:
+                ret_features['{}_lb'.format(feat_key)] = cur_features
 
         elif feat_key == 'topic':
             # ret_values[feat_key] = tf.cast(tf.io.parse_tensor(x[feat_key], tf.double), tf.float32)
             cur_features = tf.cast(tf.io.parse_tensor(x[feat_key], tf.double), tf.float32)
             ret_labels[feat_key] = cur_features
+        elif feat_key == 'raw_audio':
+            cur_features = tf.cast(tf.io.parse_tensor(x[feat_key], tf.double), tf.float32)
+            ret_features[feat_key] = cur_features
         else:
             # ret_values[feat_key] = tf.cast(tf.io.parse_tensor(x[feat_key], tf.double), tf.float32)
             cur_features = tf.cast(tf.io.parse_tensor(x[feat_key], tf.double), tf.float32)
@@ -312,7 +366,7 @@ def map_dataset(dataset, task, is_test=False):
     return ret_dataset, current_dict
 
 
-def get_split(dataset_dir, is_training, task, split_name, feature_names, batch_size, are_test_labels_available=False, return_infos=False, targets=()):
+def get_split(dataset_dir, is_training, task, split_name, feature_names, batch_size, are_test_labels_available=False, return_infos=False, targets=(), use_multitask_loss=False):
     """
 
     :param dataset_dir:
@@ -334,7 +388,7 @@ def get_split(dataset_dir, is_training, task, split_name, feature_names, batch_s
     print('Number of tfrecords {}: '.format(split_name), len(paths))
 
     if is_training:
-        dataset = tf.data.Dataset.from_tensor_slices(paths).cache().shuffle(buffer_size=len(paths)*5, seed=1, reshuffle_each_iteration=True)
+        dataset = tf.data.Dataset.from_tensor_slices(paths)#.cache().shuffle(buffer_size=len(paths)*5, seed=1, reshuffle_each_iteration=True)
         dataset = dataset.interleave(lambda x: tf.data.TFRecordDataset(x), cycle_length=tf.data.experimental.AUTOTUNE,
                                      num_parallel_calls=tf.data.experimental.AUTOTUNE)
     else:
@@ -344,8 +398,11 @@ def get_split(dataset_dir, is_training, task, split_name, feature_names, batch_s
 
     dataset, feat_dict = map_dataset(dataset, task=task, is_test=is_test)
 
-    dataset = dataset.map(lambda x: filter_features(x, task, use_feat=feature_names, return_infos=return_infos, targets=targets),
-                          num_parallel_calls=tf.data.experimental.AUTOTUNE)#.prefetch(tf.data.experimental.AUTOTUNE)
+    dataset = dataset.map(lambda x: filter_features(x, task, use_feat=feature_names, return_infos=return_infos, targets=targets, use_multitask_loss=use_multitask_loss),
+                          num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    if is_training and split_name == 'train':
+        dataset = dataset.cache().shuffle(buffer_size=11000, seed=1, reshuffle_each_iteration=True)
+        dataset = dataset.repeat()
     # Batching
     dataset = dataset.batch(batch_size=batch_size).prefetch(tf.data.experimental.AUTOTUNE)
 
@@ -359,3 +416,44 @@ def CCC(X1, X2):
 
     covariance = np.nanmean((X1 - x_mean) * (X2 - y_mean))
     return round((2 * covariance) / (x_var + y_var + (x_mean - y_mean) ** 2),4)
+
+class VerboseFitCallBack(tf.keras.callbacks.Callback):
+    def __init__(self):
+        super(VerboseFitCallBack).__init__()
+        self.columns = None
+        self.st_time = 0
+
+    def on_epoch_begin(self, epoch, logs=None):
+        self.st_time = time.time()
+
+    def on_epoch_end(self, epoch, logs=None):
+        current_header = list(logs.keys())
+        if 'lr' in current_header:
+            lr_index = current_header.index('lr')
+        else:
+            lr_index = len(current_header)
+
+        if self.columns is None:
+            self.columns = ['ep', 'lr'] + current_header[:lr_index] + current_header[lr_index + 1:] + ['time']
+            # for col_index in range(len(self.columns)):
+            #     if len(self.columns[col_index]) > 10:
+            #         self.columns[col_index] = self.columns[col_index][:10]
+        logs_values = list(logs.values())
+
+        # Get Learning rate
+        current_lr = tf.keras.backend.get_value(self.model.optimizer.lr)
+        try:
+            current_step = tf.cast(self.model.optimizer.iterations, tf.float32)
+            current_lr = float(current_lr(current_step))
+        except:
+            current_lr = float(current_lr)
+
+        time_ep = time.time() - self.st_time
+        current_values = [epoch + 1, current_lr] + logs_values[:lr_index] + logs_values[lr_index + 1:] + [time_ep]
+        table = tabulate.tabulate([current_values], self.columns, tablefmt='simple', floatfmt='10.6g')
+        if epoch % 40 == 0:
+            table = table.split('\n')
+            table = '\n'.join([table[1]] + table)
+        else:
+            table = table.split('\n')[2]
+        print(table)

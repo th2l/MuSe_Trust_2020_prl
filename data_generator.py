@@ -11,6 +11,8 @@ from common import make_dirs_safe
 from configs.configuration import *
 import sys
 from tqdm import tqdm
+import librosa as lb
+
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 features_name_tf = []
 
@@ -155,7 +157,7 @@ def read_processed_data(task_folder, segment_id, feature_name_list, task, get_la
     chunk_id_dict = dict()
 
     for feature_name in feature_name_list:
-        if feature_name == "lld":
+        if feature_name == "lld" or feature_name == "raw_audio":
             # print('Our system do not support lld')
             continue
         else:
@@ -209,6 +211,47 @@ def read_processed_data(task_folder, segment_id, feature_name_list, task, get_la
 
     id_dict = segment_id * np.ones(num_samples, dtype=np.int).reshape(-1, 1)
 
+    # Get raw audio features
+    chunk_id_unq = np.unique(chunk_time_['chunk_id'], return_counts=False)
+    raw_audio_feat = []
+    SR = 8000
+    segment_len = 0.25 * SR
+    for cid_index in range(len(chunk_id_unq)):
+        current_cid = chunk_id_unq[cid_index]
+        current_timestamps = chunk_time_['timestamp'][chunk_time_['chunk_id'] == current_cid]
+
+        raw_waveform, sr = lb.load(os.path.join(task_folder, 'audio_segments', str(segment_id), '{}_{}.wav'.format(segment_id, current_cid)), sr=SR)
+        duration = current_timestamps[-1] - current_timestamps[0]
+        num_segments = int((duration / 1000*sr) /segment_len) + 1
+        segments = np.linspace(0, duration/1000*sr, num=num_segments, dtype=int)
+        if num_segments != len(current_timestamps):
+            print('stop here')
+        for idx in range(num_segments-1):
+            start = segments[idx]
+            stop = segments[idx+1]
+            current_segm = raw_waveform[start: stop]
+            if len(current_segm) < int(segment_len):
+                current_segm = np.pad(current_segm, (0, int(segment_len)-len(current_segm)), mode='constant', constant_values=0)
+            raw_audio_feat.append(current_segm)
+
+        last_segment = raw_waveform[segments[-1]:]
+        if len(last_segment) < segment_len:
+            last_segment = np.pad(last_segment, (0, int(segment_len)-len(last_segment)), mode='constant', constant_values=0)
+        else:
+            last_segment = last_segment[:int(segment_len)]
+        if len(last_segment) != int(segment_len):
+            print('Error here ', segment_id, current_cid)
+            sys.exit(0)
+        raw_audio_feat.append(last_segment)
+
+    try:
+        raw_audio_feat = np.array(raw_audio_feat).astype(np.float)
+    except:
+        print('Error in here ', segment_id)
+        sys.exit(0)
+    if raw_audio_feat.shape[0] != chunk_time_['chunk_id'].shape[0]:
+        print('Need to check Error here ', segment_id)
+    feature_dict['raw_audio'] = raw_audio_feat
     return id_dict, chunk_time_['chunk_id'], chunk_time_['timestamp'], feature_dict, label_dict
 
 def _int_feature(value):
@@ -394,6 +437,8 @@ def main(task_name, partition_proposal_path, tf_records_folder, task_folder, fea
     id_to_partition, partition_to_id = get_partition(partition_proposal_path)
 
     for partition in partition_to_id.keys():
+        if partition == 'train':
+            continue
         print("Making tfrecords for", partition, "partition.")
         current_tf_records_folder = tf_records_folder + '/' + partition
         make_dirs_safe(current_tf_records_folder)
@@ -423,11 +468,11 @@ if __name__ == "__main__":
          feature_names=FEATURE_NAMES,
          are_test_labels_available=False)
 
-    TASK_NAME = "c1_muse_wild"
-    print(TASK_NAME)
-    main(task_name=TASK_NAME,
-         partition_proposal_path=PARTITION_PROPOSAL_PATH,
-         tf_records_folder=TF_RECORDS_FOLDER[TASK_NAME],
-         task_folder=TASK_FOLDER[TASK_NAME],
-         feature_names=FEATURE_NAMES,
-         are_test_labels_available=False)
+    # TASK_NAME = "c1_muse_wild"
+    # print(TASK_NAME)
+    # main(task_name=TASK_NAME,
+    #      partition_proposal_path=PARTITION_PROPOSAL_PATH,
+    #      tf_records_folder=TF_RECORDS_FOLDER[TASK_NAME],
+    #      task_folder=TASK_FOLDER[TASK_NAME],
+    #      feature_names=FEATURE_NAMES,
+    #      are_test_labels_available=False)

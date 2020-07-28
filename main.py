@@ -2,6 +2,7 @@
 Created by hvthong
 """
 from comet_ml import Experiment
+from comet_ml.exceptions import InterruptedExperiment
 import os, random, argparse
 import pandas as pd
 
@@ -18,18 +19,26 @@ from common import *
 from tqdm import tqdm
 import utils
 import models
+import tensorflow_addons as tfa
+from tqdm import tqdm
+import time, gc
 
-
-def test(cfgs, model):
-    test_data = get_data(cfgs, is_training=False, return_infos=True, split_name='devel')  # Test or devel
-    write_out = {ky: [] for ky in cfgs.targets}
+def test(cfgs, model, split_name='devel'):
+    print('Generate prediction for ', split_name)
+    use_multitask_loss = args.use_weight_mtl and len(cfgs.targets) > 1
+    test_data = get_data(cfgs, is_training=False, return_infos=True, split_name=split_name,
+                         use_multitask_loss=use_multitask_loss)  # Test or devel
+    write_out = {'prediction_{}'.format(ky): [] for ky in cfgs.targets if not (ky != 'trustworthiness' and len(cfgs.targets) > 1)}
     write_infos = None
 
     # ccc_trust = utils.ConcordanceCorrelationCoefficientMetric('val_ccc_trust')
     write_gt = {ky + '_gt': [] for ky in cfgs.targets}
 
-    for sample_batched in test_data:
-        feat_x, feat_y, feat_infos = sample_batched
+    for sample_batched in tqdm(test_data):
+        if split_name != 'test':
+            feat_x, feat_y, feat_infos = sample_batched
+        else:
+            feat_x, feat_infos = sample_batched
         outputs = model(feat_x)
 
         if write_infos is None:
@@ -52,34 +61,69 @@ def test(cfgs, model):
 
         if len(cfgs.targets) == 1:
             outputs = [outputs]
-        for idx in range(len(outputs)):
-            write_out[cfgs.targets[idx]].append(outputs[idx].numpy().reshape(-1, )[keep_index])
-            write_gt[cfgs.targets[idx] + '_gt'].append(feat_y[cfgs.targets[idx]].numpy().reshape(-1)[keep_index])
+        for idx in range(len(cfgs.targets)):
+            if cfgs.task == 3 and cfgs.targets[idx] != 'trustworthiness':
+                continue
+            write_out['prediction_{}'.format(cfgs.targets[idx])].append(outputs[idx].numpy().reshape(-1, )[keep_index])
+            if split_name != 'test':
+                write_gt[cfgs.targets[idx] + '_gt'].append(feat_y[cfgs.targets[idx]].numpy().reshape(-1)[keep_index])
 
+    write_infos_ret = dict()
     for ky in write_infos.keys():
-        write_infos[ky] = np.concatenate(write_infos[ky]).reshape(-1, )
+        if ky == 'file_id':
+            wky = 'id'
+        elif ky == 'timestamp':
+            wky = 'timestamp'
+        else:
+            continue
+        write_infos_ret[wky] = np.concatenate(write_infos[ky]).reshape(-1, ).astype(np.int)
+        print(wky, write_infos_ret[wky].shape)
 
     for ky in cfgs.targets:
-        write_out[ky] = np.concatenate(write_out[ky]).reshape(-1, )
-        write_gt[ky + '_gt'] = np.concatenate(write_gt[ky + '_gt']).reshape(-1, )
-        print(ky)
-        print('baseline code: ', utils.CCC(write_out[ky], write_gt[ky + '_gt']))
-        ccc_tf = utils.ConcordanceCorrelationCoefficientMetric()
-        ccc_tf.update_state(write_gt[ky + '_gt'], write_out[ky])
-        print('tf: ', ccc_tf.result())
+        if cfgs.task == 3 and len(cfgs.targets) > 1 and ky != 'prediction_{}'.format(ky):
+            continue
 
-    write_data = write_infos
+        write_out['prediction_{}'.format(ky)] = np.concatenate(write_out['prediction_{}'.format(ky)]).reshape(-1, )
+
+        print('prediction_{}'.format(ky), write_out['prediction_{}'.format(ky)].shape)
+
+        if split_name != 'test':
+            write_gt[ky + '_gt'] = np.concatenate(write_gt[ky + '_gt']).reshape(-1, )
+            print(ky)
+            base_code_ccc = utils.CCC(write_out['prediction_{}'.format(ky)], write_gt[ky + '_gt'])
+            print('baseline code: ', base_code_ccc)
+            ccc_tf = utils.ConcordanceCorrelationCoefficientMetric()
+            ccc_tf.update_state(write_gt[ky + '_gt'], write_out['prediction_{}'.format(ky)])
+            our_code_cc = ccc_tf.result()
+            print('tf: ', our_code_cc)
+            if not os.path.isfile('./train_logs/val_ccc_logs.txt'):
+                wmode = 'w'
+            else:
+                wmode = 'a'
+            with open('./train_logs/val_ccc_logs.txt', wmode) as logs_fp:
+                logs_fp.write('{},{},{},{}\n'.format('_'.join(cfgs.use_data), cfgs.dir, our_code_cc, base_code_ccc))
+
+    write_data = write_infos_ret
     write_data.update(write_out)
-    write_data.update(write_gt)
+    if split_name != 'test':
+        write_data.update(write_gt)
 
+    print("Check write data")
+    for k, v in write_data.items():
+        print(k)
+        print(v.shape)
     # for kp, kv in write_data.items():
     #     print(kp)
     #     print(kv.shape)
 
-    pd.DataFrame(np.stack(list(write_data.values())).T, columns=list(write_data.keys())).sort_values(
-        by=['file_id', 'timestamp']).to_csv('devel.csv', index=False)
-
-    pass
+    df = pd.DataFrame(np.stack(list(write_data.values())).T, columns=list(write_data.keys())).sort_values(
+        by=['id', 'timestamp'])
+    df['id'] = df['id'].astype(int)
+    df['timestamp'] = df['timestamp'].astype(int)
+    if args.test != '':
+        df.to_csv(os.path.join(cfgs.test, '{}.csv'.format(split_name)), index=False)
+    else:
+        df.to_csv(os.path.join(cfgs.dir, '{}.csv'.format(split_name)), index=False)
 
 
 def train(cfgs):
@@ -90,73 +134,120 @@ def train(cfgs):
     :param task:
     :return:
     """
-    experiment = Experiment(project_name="MuSe-Trust-2020", api_key='uG1BcicYOr83KvLjFEZQMrWVg', auto_output_logging='simple')
+    experiment = Experiment(project_name="MuSe-Trust-2020", api_key='uG1BcicYOr83KvLjFEZQMrWVg',
+                            auto_output_logging='simple', disabled=False)
     # experiment.log_parameters(cfgs)
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='main.py')
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='data_generator.py')
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='utils.py')
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='models.py')
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='configs')
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='main.py')
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='common.py')
+    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/main.py')
+    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/data_generator.py')
+    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/utils.py')
+    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/models.py')
+    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/configs')
+    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/common.py')
 
-    if cfgs.task == 1:
-        num_output = 2
-    elif cfgs.task == 3:
-        num_output = 3
-    else:
-        raise ValueError('Un-support task {} at this time'.format(cfgs.task))
     print('Use feat ', cfgs.use_data)
+    use_multitask_loss = args.use_weight_mtl
 
-    loaders = {'train': get_data(cfgs, is_training=True, return_infos=False, split_name='train'),
-               'devel': get_data(cfgs, is_training=False, return_infos=False, split_name='devel')}
 
     METRICS = {ky: utils.ConcordanceCorrelationCoefficientMetric(name='CCC') for ky in cfgs.targets}
 
-    loss_obj = {ky: utils.ConcordanceLoss(name='CCCL') for ky in cfgs.targets}
-    opt = tf.keras.optimizers.Adam(learning_rate=cfgs.lr_init)
+    if len(targets) == 1:
+        loss_obj = {ky: utils.ConcordanceLoss(name='CCCL') for ky in cfgs.targets}
+    else:
+        loss_obj = None
 
     model = models.get_model(cfgs.seq_length, feat_names=cfgs.use_data, reg_cls='reg', num_output=len(cfgs.targets),
-                             targets=cfgs.targets, use_mask=cfgs.use_mask)
+                             targets=cfgs.targets, use_mask=cfgs.use_mask, use_multitask_loss=use_multitask_loss, gaussian_noise=cfgs.gaussian_noise)
+    # model.summary()
 
-    model.compile(optimizer=opt, loss=loss_obj, weighted_metrics=METRICS)
+    if cfgs.test == '':
+        loaders = {'train': get_data(cfgs, is_training=True, return_infos=False, split_name='train',
+                                     use_multitask_loss=len(targets) > 1),
+                   'devel': get_data(cfgs, is_training=False, return_infos=False, split_name='devel',
+                                     use_multitask_loss=len(targets) > 1)}
+        # for smp in loaders['devel']:
+        #     print(smp)
+        #     continue
+        steps_per_epoch = cfgs.steps_per_epoch * (10000 / cfgs.batch_size)# len(list(loaders['train']))
+        lr_schedule = models.CusLRScheduler(initial_learning_rate=cfgs.lr_init, min_lr=cfgs.min_lr, lr_start_warmup=0.,
+                                            warmup_steps=5 * steps_per_epoch, num_constant=0 * steps_per_epoch,
+                                            T_max=cfgs.use_min_lr * steps_per_epoch, num_half_cycle=1)
+        if cfgs.opt == 'adam':
+            # opt = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
+            opt = tfa.optimizers.AdamW(learning_rate=lr_schedule, weight_decay=1e-4)
+        else:
+            opt = tf.keras.optimizers.SGD(learning_rate=lr_schedule, momentum=0.9, nesterov=True)
 
-    monitor_name = 'val_CCC' if len(cfgs.targets) == 1 else 'val_trustworthiness_CCC'
+        # tf.keras.utils.plot_model(model, to_file=os.path.join(cfgs.dir, 'model_png.png'), show_shapes=True)
+        model.compile(optimizer=opt, loss=loss_obj, weighted_metrics=METRICS)
 
-    best_ckpt = tf.keras.callbacks.ModelCheckpoint(os.path.join(cfgs.dir, 'best_checkpoint.h5'), monitor=monitor_name,
-                                                   verbose=0, save_best_only=True, save_weights_only=True, mode='max')
-    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor=monitor_name, factor=0.1, patience=3, verbose=0, mode='max', min_delta=0.0001, min_lr=1e-6)
-    # tfb = tf.keras.callbacks.TensorBoard(log_dir=cfgs.dir)
+        monitor_name = 'val_CCC' if len(cfgs.targets) == 1 else 'val_trustworthiness_CCC'
 
-    model.fit(loaders['train'], validation_data=loaders['devel'], epochs=cfgs.epochs, verbose=2, callbacks=[best_ckpt, reduce_lr])
+        best_ckpt = tf.keras.callbacks.ModelCheckpoint(os.path.join(cfgs.dir, 'best_checkpoint.h5'),
+                                                       monitor=monitor_name,
+                                                       verbose=0, save_best_only=True, save_weights_only=True,
+                                                       mode='max')
+        verbose_cb = utils.VerboseFitCallBack()
+        # reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor=monitor_name, factor=0.7, patience=3, verbose=0,
+        #                                                  mode='max', min_delta=0.0001, min_lr=1e-6)
+        # tfb = tf.keras.callbacks.TensorBoard(log_dir=cfgs.dir)
 
-    model.load_weights(os.path.join(cfgs.dir, 'best_checkpoint.h5'))
+        try:
+            # print('Number of steps per epochs: ', len(list(loaders['train'])))
+            model.fit(loaders['train'], validation_data=loaders['devel'], steps_per_epoch=steps_per_epoch,
+                      epochs=cfgs.epochs, verbose=1, callbacks=[best_ckpt,])#verbose_cb
+        except (InterruptedExperiment, KeyboardInterrupt) as exc:
+            experiment.log_other("status", str(exc))
+            print('Stopped Training')
 
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder=cfgs.dir)
-    # test(cfgs, model)
+        experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder=cfgs.dir)
+
+        model.load_weights(os.path.join(cfgs.dir, 'best_checkpoint.h5'))
+
+    else:
+        if os.path.isdir(cfgs.test):
+            ckpt_path = os.path.join(cfgs.test, 'best_checkpoint.h5')
+        else:
+            ckpt_path = cfgs.test
+        if not os.path.isfile(ckpt_path):
+            raise ValueError('Cannot load ', ckpt_path)
+
+        model.load_weights(ckpt_path)
+
+
+    test(cfgs, model, 'devel')
+    test(cfgs, model, 'test')
     pass
 
 
-def get_data(cfgs, is_training=True, return_infos=False, split_name='train'):
+def get_data(cfgs, is_training=True, return_infos=False, split_name='train', use_multitask_loss=False):
     data_loader = utils.get_split(cfgs.tf_records_folder, is_training=is_training, task=cfgs.task,
                                   split_name=split_name, feature_names=cfgs.use_data, batch_size=cfgs.batch_size,
-                                  return_infos=return_infos, targets=cfgs.targets)
+                                  return_infos=return_infos, targets=cfgs.targets,
+                                  use_multitask_loss=use_multitask_loss)
     return data_loader
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='MuSe Challenge code')
-    parser.add_argument('--dir', type=str, default='tmp', help='Training logs directory (default: tmp)')
+    parser.add_argument('--dir', type=str, default='./tmp', help='Training logs directory (default: tmp)')
+    parser.add_argument('--test', type=str, default='', help='Test checkpoint (default: )')
+    parser.add_argument('--opt', type=str, default='adam', help='Optimizer (default: adam)')
     parser.add_argument('--task', type=int, default=3, help='Task for training {1,2,3} (default: 3)')
     parser.add_argument('--seed', type=int, default=1, help='Random seed (default: 1)')
     parser.add_argument('--epochs', type=int, default=30, help='Training epochs (default: 30)')
-    parser.add_argument('--gaussian_noise', type=float, default=0.1, help='Add gaussian noise to input (default: 0.1)')
-    parser.add_argument('--lr_init', type=float, default=1e-3, help='Initial learning rate (default: 0.1)')
-
-    parser.add_argument('--batch_size', type=int, default=256, help='Batch size (default: 8)')
+    parser.add_argument('--gaussian_noise', type=float, default=0.01, help='Add gaussian noise to input (default: 0.1)')
+    parser.add_argument('--lr_init', type=float, default=1e-3, help='Initial learning rate (default: 1e-3)')
+    parser.add_argument('--min_lr', type=float, default=1e-5, help='Initial learning rate (default: 1e-5)')
+    parser.add_argument('--use_min_lr', type=int, default=20, help='Start to use min lr (default: 20)')
+    parser.add_argument('--steps_per_epoch', type=float, default=1.0, help='Steps per epoch (default 1.0)')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size (default: 8)')
     parser.add_argument('--buffer_size', type=int, default=200,
                         help='Buffer size for shuffle training data (default: 10000)')
     parser.add_argument('--use_mask', action='store_true', help='Use masking in LSTM')
+    parser.add_argument('--use_data', nargs='+', help='List of features use in training', required=True)
+    parser.add_argument('--use_weight_mtl', action='store_true', help='Use weighted multi-task loss (default: false)')
+    parser.add_argument('--multitask', action='store_true',
+                        help='Use multitask or not - apply for task 3 only (default: false)')
 
     args = parser.parse_args()
 
@@ -171,34 +262,21 @@ if __name__ == '__main__':
                 "landmarks_2d": False, "landmarks_3d": False, "lld": False, "openpose": False, "pdm": False,
                 "pose": False, "vggface": False, "xception": False}
 
-    if cfgs_dict['task'] in [1, 3]:
-        use_data.update({'deepspectrum': True, 'fasttext': True, 'vggface': True, "landmarks_2d": True})
-    elif cfgs_dict['task'] == 2:
-        use_data.update({'deepspectrum': True, 'fasttext': True, 'vggface': True})
-    else:
-        raise ValueError("Unknown task {}".format(cfgs_dict['task']))
-
     utils.set_gpu_growth_or_cpu(use_cpu=False)
     utils.set_seed(args.seed)
 
-    cfgs_dict['use_data'] = [k for k, v in use_data.items() if v is True]
+    cfgs_dict['use_data'] = sorted(cfgs_dict['use_data'])
 
-    targets = utils.get_labels_list(args.task, multitask=False)
+    targets = utils.get_labels_list(args.task, multitask=args.multitask)
     cfgs_dict['targets'] = targets
 
     cfgs = dict_to_struct(cfgs_dict)
-
-    loaders = get_data(cfgs=cfgs)
 
     print('tfrecords folder: ', cfgs.tf_records_folder)
     hparams = {'num_lstm': 2, 'lstm_units': [64, 16], 'num_fc': 2, 'fc_units': [16, 16], 'SEQ_LENGTH': cfgs.seq_length}
     hparams = dict_to_struct(hparams)
 
     print(cfgs)
-    # for feat, label in loaders['train']:
-    #     print(feat.keys(), label.keys())
-    #     idx += 1
-    #     if idx > 20:
-    #         break
 
+    os.makedirs(cfgs.dir, exist_ok=True)
     train(cfgs)

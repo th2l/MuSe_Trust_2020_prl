@@ -270,7 +270,7 @@ parse_dict = {'file_id': str_features, 'chunk_id': str_features,
               'gocar': str_features, 'landmarks_2d': str_features,
               'landmarks_3d': str_features, 'openpose': str_features, 'pdm': str_features,
               'pose': str_features, 'vggface': str_features,
-              'xception': str_features, 'raw_audio': str_features, 'topic': str_features, 'trustworthiness': str_features,
+              'xception': str_features, 'topic': str_features, 'trustworthiness': str_features,
               'valence': str_features, 'arousal': str_features}
 
 
@@ -312,9 +312,6 @@ def filter_features(x, task, use_feat=None, return_infos=False, targets=(), use_
             # ret_values[feat_key] = tf.cast(tf.io.parse_tensor(x[feat_key], tf.double), tf.float32)
             cur_features = tf.cast(tf.io.parse_tensor(x[feat_key], tf.double), tf.float32)
             ret_labels[feat_key] = cur_features
-        elif feat_key == 'raw_audio':
-            cur_features = tf.cast(tf.io.parse_tensor(x[feat_key], tf.double), tf.float32)
-            ret_features[feat_key] = cur_features
         else:
             # ret_values[feat_key] = tf.cast(tf.io.parse_tensor(x[feat_key], tf.double), tf.float32)
             cur_features = tf.cast(tf.io.parse_tensor(x[feat_key], tf.double), tf.float32)

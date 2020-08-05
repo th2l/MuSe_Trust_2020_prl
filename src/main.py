@@ -1,8 +1,6 @@
 """
 Created by hvthong
 """
-from comet_ml import Experiment
-from comet_ml.exceptions import InterruptedExperiment
 import os, random, argparse
 import pandas as pd
 
@@ -134,16 +132,6 @@ def train(cfgs):
     :param task:
     :return:
     """
-    experiment = Experiment(project_name="MuSe-Trust-2020", api_key='uG1BcicYOr83KvLjFEZQMrWVg',
-                            auto_output_logging='simple', disabled=False)
-    # experiment.log_parameters(cfgs)
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/main.py')
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/data_generator.py')
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/utils.py')
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/models.py')
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/configs')
-    experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder='./src/common.py')
-
     print('Use feat ', cfgs.use_data)
     use_multitask_loss = args.use_weight_mtl
 
@@ -164,9 +152,7 @@ def train(cfgs):
                                      use_multitask_loss=len(targets) > 1),
                    'devel': get_data(cfgs, is_training=False, return_infos=False, split_name='devel',
                                      use_multitask_loss=len(targets) > 1)}
-        # for smp in loaders['devel']:
-        #     print(smp)
-        #     continue
+
         steps_per_epoch = cfgs.steps_per_epoch * (10000 / cfgs.batch_size)# len(list(loaders['train']))
         lr_schedule = models.CusLRScheduler(initial_learning_rate=cfgs.lr_init, min_lr=cfgs.min_lr, lr_start_warmup=0.,
                                             warmup_steps=5 * steps_per_epoch, num_constant=0 * steps_per_epoch,
@@ -194,12 +180,9 @@ def train(cfgs):
         try:
             # print('Number of steps per epochs: ', len(list(loaders['train'])))
             model.fit(loaders['train'], validation_data=loaders['devel'], steps_per_epoch=steps_per_epoch,
-                      epochs=cfgs.epochs, verbose=1, callbacks=[best_ckpt,])#verbose_cb
-        except (InterruptedExperiment, KeyboardInterrupt) as exc:
-            experiment.log_other("status", str(exc))
+                      epochs=cfgs.epochs, verbose=0, callbacks=[best_ckpt,verbose_cb])
+        except (KeyboardInterrupt) as exc:
             print('Stopped Training')
-
-        experiment.log_model(name=cfgs.dir.split('/')[-1], file_or_folder=cfgs.dir)
 
         model.load_weights(os.path.join(cfgs.dir, 'best_checkpoint.h5'))
 
@@ -240,7 +223,7 @@ if __name__ == '__main__':
     parser.add_argument('--min_lr', type=float, default=1e-5, help='Initial learning rate (default: 1e-5)')
     parser.add_argument('--use_min_lr', type=int, default=20, help='Start to use min lr (default: 20)')
     parser.add_argument('--steps_per_epoch', type=float, default=1.0, help='Steps per epoch (default 1.0)')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size (default: 8)')
+    parser.add_argument('--batch_size', type=int, default=256, help='Batch size (default: 8)')
     parser.add_argument('--buffer_size', type=int, default=200,
                         help='Buffer size for shuffle training data (default: 10000)')
     parser.add_argument('--use_mask', action='store_true', help='Use masking in LSTM')
@@ -272,11 +255,17 @@ if __name__ == '__main__':
 
     cfgs = dict_to_struct(cfgs_dict)
 
+    loaders = get_data(cfgs=cfgs)
+
     print('tfrecords folder: ', cfgs.tf_records_folder)
     hparams = {'num_lstm': 2, 'lstm_units': [64, 16], 'num_fc': 2, 'fc_units': [16, 16], 'SEQ_LENGTH': cfgs.seq_length}
     hparams = dict_to_struct(hparams)
 
     print(cfgs)
-
+    # for feat, label in loaders['train']:
+    #     print(feat.keys(), label.keys())
+    #     idx += 1
+    #     if idx > 20:
+    #         break
     os.makedirs(cfgs.dir, exist_ok=True)
     train(cfgs)

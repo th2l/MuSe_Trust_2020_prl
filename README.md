@@ -9,3 +9,7 @@
 - NumPy
 - Tqdm
 - Tabulate
+
+### References
+
+[1] PANDIT, Vedhas; SCHULLER, Björn. The many-to-many mapping between concordance correlation coefficient and mean square error. *arXiv preprint arXiv:1902.05180*, 2019.

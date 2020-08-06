@@ -27,7 +27,6 @@ Evaluation metric: concordance correlation coefficient (CCC) - <img src="https:/
   
 The above equation also describe the relationship between CCC score and MSE (mean square error) which presented in [2]. In this repo, we implemented metrics and losses function based on above function with tensorflow-probability and tensorflow 2.2.0 as in *src/utils.py*.
 
-
 | Feature  | CCC-devel | CCC-test |
 | ------------- | ------------- | ------------- |
 | DS + FT + VG  | 0.3193  | **0.3353** |
@@ -37,6 +36,9 @@ The above equation also describe the relationship between CCC score and MSE (mea
 | FT - baseline method [1] | 0.2278 | 0.2549 |
 | Ge + FT + V - baseline method [1] | 0.1245 | 0.1695 |
 | Ge + FT - baseline method [1] | 0.2296 | 0.2054 |
+
+The details about features are describe in baseline paper [1].
+
 ### References
 
 [1] Lukas Stappen, Alice Baird, Georgios Rizos, Panagiotis Tzirakis, Xinchen Du, Felix Hafner, Lea Schumann, Adria Mallol-Ragolta, Bj ̈orn W. Schuller, Iulia Lefter, Erik Cambria, Ioannis Kompatsiaris: “The 2020 Multimodal Sentiment Analysis in Real-life Media Workshop and Challenge: Emotional Car Reviews in-the-wild”, Proceedings of *ACM-MM 2020, Seattle, United States*, 2020.

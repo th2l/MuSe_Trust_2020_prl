@@ -27,7 +27,7 @@ Evaluation metric: concordance correlation coefficient (CCC) - <img src="https:/
   <img src="https://latex.codecogs.com/gif.latex?%5Csmall%20%5Crho_%7Bc%7D%28y%2C%20%5Chat%7By%7D%29%20%3D%20%5Cfrac%7B2%5Csigma%28y%2C%20%5Chat%7By%7D%29%7D%7B%5Csigma%28y%2Cy%29%20&plus;%20%5Csigma%28%5Chat%7By%7D%2C%5Chat%7By%7D%29%20&plus;%20%28%5Cmu-%5Chat%7B%5Cmu%7D%29%5E%7B2%7D%7D%20%3D%20%5Cfrac%7B2%5Crho%28y%2C%5Chat%7By%7D%29%5Csqrt%7B%5Csigma%28y%2C%20y%29%5Csigma%28%5Chat%7By%7D%2C%5Chat%7By%7D%29%7D%7D%7B%5Csigma%28y%2Cy%29%20&plus;%20%5Csigma%28%5Chat%7By%7D%2C%5Chat%7By%7D%29%20&plus;%20%28%5Cmu-%5Chat%7B%5Cmu%7D%29%5E%7B2%7D%7D%20%3D%20%5Cleft%5B1%20&plus;%20%5Cfrac%7B%5Cmathrm%7BMSE%7D%28y%2C%5Chat%7By%7D%29%7D%7B2%5Csigma%28y%2C%5Chat%7By%7D%29%7D%5Cright%5D%5E%7B-1%7D">
   </p>
   
-The above equation also describe the relationship between CCC score and MSE (mean square error) which presented in [2]. In this repo, we implemented metrics and losses function based on above function with tensorflow-probability and tensorflow 2.2.0 as in *src/utils.py*.
+The above equation also describe the relationship between CCC score and MSE (mean square error) which presented in [2]. In this repo, we implemented metrics and losses function based on above equation with tensorflow-probability and tensorflow 2.2.0 as in *src/utils.py*.
 
 | Feature  | CCC-devel | CCC-test |
 | ------------- | ------------- | ------------- |

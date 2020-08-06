@@ -1,4 +1,6 @@
-## MuSe-Trust Challenge - ACM Multimedia 2020 - prl source code
+## MuSe-Trust Challenge - prl source code
+
+This repo contain our source code for MuSe-Trust sub challenge in [MuSe-Trust Challenge 2020](https://www.muse-challenge.org/)
 
 ### Requirements
 - Python 3.7

@@ -32,7 +32,7 @@ The above equation also describe the relationship between CCC score and MSE (mea
 | Feature  | CCC-devel | CCC-test |
 | ------------- | ------------- | ------------- |
 | DS + FT + VG  | 0.3193  | **0.3353** |
-| DS + FT + Landmarks  | 0.3426  | 0.3259 |
+| DS + FT + Landmarks  | **0.3426**  | 0.3259 |
 | FT + VG + RA - baseline method [1] | 0.3198 | **0.4128** |
 | DS – baseline method [1] | 0.2019 | 0.1701 |
 | FT - baseline method [1] | 0.2278 | 0.2549 |
